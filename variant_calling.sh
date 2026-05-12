@@ -1,9 +1,11 @@
 #!/bin/bash
+set -exuo pipefail
 
 # --- KONFIGURACJA ŚCIEŻEK ---
-REF="/Users/adamgruda/Projects/uc_genome_analysis/ref/human_g1k_v37.fasta"
-KNOWN_SITES="/Users/adamgruda/Projects/uc_genome_analysis/ref/dbsnp_138.b37.vcf"
-RESULTS_DIR="/Users/adamgruda/Projects/uc_genome_analysis/results"
+REF="/home/adam/projects/ega-bam-pipeline/ref/human_g1k_v37.fasta"
+KNOWN_SITES="/home/adam/projects/ega-bam-pipeline/ref/dbsnp_138.b37.vcf"
+RESULTS_DIR="/home/adam/projects/ega-bam-pipeline/control_results"
+
 INTERVALS="-L 1 -L 2 -L 3 -L 4 -L 5 -L 6 -L 7 -L 8 -L 9 -L 10 -L 11 -L 12 -L 13 -L 14 -L 15 -L 16 -L 17 -L 18 -L 19 -L 20 -L 21 -L 22 -L X -L Y -L MT"
 
 mkdir -p "$RESULTS_DIR"
@@ -27,35 +29,33 @@ process_bam() {
     # 1. AddOrReplaceReadGroups
     gatk AddOrReplaceReadGroups \
        -I "$input_bam" -O "$fixed_bam" \
-       -RGID 1 -RGLB lib1 -RGPL illumina -RGPU unit1 -RGSM "$base_name"
+       -RGID 1 -RGLB lib1 -RGPL illumina -RGPU unit1 -RGSM "$base_name" \
+       --VALIDATION_STRINGENCY LENIENT
     
-    # Usuwamy oryginalny BAM po utworzeniu 'fixed' (zgodnie z prośbą)
-    rm "$input_bam"
     samtools index "$fixed_bam"
 
     # 2. BaseRecalibrator
     gatk BaseRecalibrator \
        -R "$REF" -I "$fixed_bam" --known-sites "$KNOWN_SITES" \
-       $INTERVALS -O "$recal_table"
+       $INTERVALS -O "$recal_table" \
+       --read-validation-stringency LENIENT
 
     # 3. ApplyBQSR
     gatk ApplyBQSR \
        -R "$REF" -I "$fixed_bam" --bqsr-recal-file "$recal_table" \
-       -O "$recalibrated_bam"
+       -O "$recalibrated_bam" \
+       --read-validation-stringency LENIENT
     
-    # Usuwamy fixed_bam (i jego indeks) po BQSR
-    rm "$fixed_bam" "${fixed_bam}.bai"
-
     # 4. Indexing recalibrated BAM
     samtools index "$recalibrated_bam"
 
     # 5. HaplotypeCaller
     gatk HaplotypeCaller \
        -R "$REF" -I "$recalibrated_bam" \
-       $INTERVALS -O "$output_vcf"
-
-    # 6. Czyszczenie końcowe próbki
-    rm "$recalibrated_bam" "${recalibrated_bam}.bai" "$recal_table"
+       $INTERVALS -O "$output_vcf" \
+       --read-validation-stringency LENIENT
+    
+    rm "$fixed_bam" "${fixed_bam}.bai" "$recalibrated_bam" "${recalibrated_bam}.bai" "$recal_table"
     
     echo "Zakończono: $base_name. Wynik w $output_vcf"
 }
@@ -72,15 +72,21 @@ if [ ! -f "${KNOWN_SITES}.idx" ]; then
     gatk IndexFeatureFile -I "$KNOWN_SITES"
 fi
 
+echo "Argumenty: $@"
+
 while getopts "f:d:" opt; do
   case $opt in
     f)
+      echo "Tryb pojedynczego pliku: $OPTARG"
       process_bam "$OPTARG"
       ;;
     d)
+      echo "Tryb katalogu: $OPTARG"
       for file in "$OPTARG"/*.bam; do
-          [ -e "$file" ] || continue
-          process_bam "$file"
+          # Pomijamy pliki, które nie istnieją, oraz pliki tymczasowe wygenerowane przez ten skrypt
+          if [ -e "$file" ] && [[ ! "$file" == *"_fixed.bam" ]] && [[ ! "$file" == *"_recalibrated.bam" ]]; then
+              process_bam "$file"
+          fi
       done
       ;;
     *)

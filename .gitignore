@@ -1,3 +1,53 @@
-data
-ref
-results
+# --- Dane Bioinformatyczne (Najważniejsze!) ---
+*.vcf.gz
+*.vcf.gz.tbi
+*.vcf.gz.csi
+*.vcf.idx
+*.vcf
+*.table
+*.recal
+*.tranches
+*.idx
+*.stats
+*.bed
+*.fa
+*.fasta
+*.fai
+*.dict
+ref/vep_cache/
+
+# --- Foldery z danymi i fragmentami ---
+# Ignorujemy całe podfoldery z fragmentami (X, Y, MT, LRG_...)
+results/
+01_raw_merged/
+01b_vqsr/
+02_targeting/
+03_harmonization/
+04_qc_filtering/
+05_annotation/
+LRG_*/
+X/
+Y/
+MT/
+
+# --- Wyniki analiz i ML (zostawiamy tylko kod) ---
+*.csv
+*.png
+*.pdf
+*.html
+*.log
+
+# --- Python i Conda ---
+__pycache__/
+*.py[cod]
+*$py.class
+.env
+.venv
+env/
+venv/
+.conda/
+
+# --- Inne ---
+.DS_Store
+checkpoint.md
+analysis/podsumowanie_analizy_vqsr.md
