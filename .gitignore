@@ -19,12 +19,6 @@ ref/vep_cache/
 # --- Foldery z danymi i fragmentami ---
 # Ignorujemy całe podfoldery z fragmentami (X, Y, MT, LRG_...)
 results/
-01_raw_merged/
-01b_vqsr/
-02_targeting/
-03_harmonization/
-04_qc_filtering/
-05_annotation/
 LRG_*/
 X/
 Y/
