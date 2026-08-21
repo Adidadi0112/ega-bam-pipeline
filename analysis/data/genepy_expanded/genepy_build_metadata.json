@@ -1,0 +1,53 @@
+{
+  "audit_counts": {
+    "genes": 216,
+    "mapped_biallelic_variants_observed_in_vcf": 537,
+    "mapping_variants_not_observed_in_vcf": 0,
+    "multiallelic_vcf_records_excluded": 11,
+    "sample_gene_cells_with_missing_calls": 2053,
+    "samples": 144
+  },
+  "deleteriousness": {
+    "lower_bound": -7.53,
+    "protein_truncating_value": 1.0,
+    "scaling": "clipped linear transformation to [0, 1]",
+    "source": "CADD RawScore",
+    "upper_bound": 35.79
+  },
+  "formula": "S_gh = -sum_i D_i * log10(f_i1 * f_i2)",
+  "gene_length_correction": "not applied",
+  "genotype_counts": {
+    "./.": 3265,
+    "0/1": 10527,
+    "1/1": 63536
+  },
+  "heterozygous_frequency_product": "MAF * (1 - MAF)",
+  "homozygous_alt_frequency_product": "MAF^2",
+  "inputs": {
+    "analysis/02_targeting/genes_uc.txt": "dca81bb67f0335c634cbd231ba4df10c9b6795a011aaf0fbc06d09beacae3254",
+    "analysis/02_targeting/uc_vqsr_rare_included.vcf.gz": "6386ef88b086beb0f18d6d255a721306e051f3d77a415550f54ae30b46ecb522",
+    "analysis/05_annotation/cadd_scores_final_vcf.gz": "2f072734d4b108884354c0e730b9fa2706b8fdea0f6f09038f772a3b9b31fd53",
+    "analysis/05_annotation/vep_results_vqsr.txt": "13364a7a68246e175eaf102fd1ac7afe9cbca212125d0056207f32b17992f544"
+  },
+  "maf": {
+    "floor": 1e-05,
+    "priority": [
+      "gnomADe_EAS_AF",
+      "gnomADe_AF",
+      "1000G_EAS_AF",
+      "1000G_AF",
+      "floor"
+    ]
+  },
+  "missing_policies": {
+    "callability_aware_matrix": "Gene score is NA if any mapped locus has missing/unsupported GT",
+    "missing_as_zero_matrix": "Missing GT contributes no observed burden"
+  },
+  "outputs": {
+    "analysis/data/genepy_expanded/genepy_callability.csv": "679faf09cbd1e22ce9956c2e37a7b49a1b4ddc75cbff1801a4212facf3bfda17",
+    "analysis/data/genepy_expanded/genepy_original_callability_aware.csv": "e8b5de2ecb23e925e9f7c858a56079a89df4c0f55c8d592b62c7b8eb1cf5d53e",
+    "analysis/data/genepy_expanded/genepy_original_missing_as_zero.csv": "1a1b284cc46f60015b93cfeb268baa5e87704c11a1371795f44d2bb4f9249b5e",
+    "analysis/data/genepy_expanded/genepy_original_missing_as_zero_without_GJA3.csv": "a911e233b68ed564cc56d0776955301b2137c31675190131bda8b67c193828b6",
+    "analysis/data/genepy_expanded/genepy_variant_audit.csv": "0609c938191e471e865a24801390d6b239e40559b02632d378a3b1e8b10f4338"
+  }
+}

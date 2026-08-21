@@ -10,24 +10,28 @@ from sklearn.neighbors import KNeighborsClassifier
 from sklearn.svm import SVC
 from sklearn.naive_bayes import GaussianNB
 from sklearn.linear_model import LogisticRegression
-from sklearn.inspection import permutation_importance
 import xgboost as xgb
 
-from sklearn.model_selection import GridSearchCV, StratifiedKFold
+from sklearn.model_selection import GridSearchCV, StratifiedKFold, RepeatedStratifiedKFold
 from sklearn.metrics import (roc_auc_score, auc, roc_curve, accuracy_score, precision_score, 
                              recall_score, f1_score, confusion_matrix, ConfusionMatrixDisplay, 
                              precision_recall_curve, average_precision_score)
 from sklearn.preprocessing import StandardScaler
+from sklearn.impute import SimpleImputer
 from sklearn.pipeline import Pipeline
 
 warnings.filterwarnings("ignore", category=FutureWarning)
 warnings.filterwarnings("ignore", category=UserWarning)
 
-os.makedirs('results/stats', exist_ok=True)
-os.makedirs('results/figures', exist_ok=True)
+RESULTS_DIR = 'results_callability_aware'
+os.makedirs(f'{RESULTS_DIR}/stats', exist_ok=True)
+os.makedirs(f'{RESULTS_DIR}/figures', exist_ok=True)
 
 # 1. Load data and preprocess
-data = pd.read_csv("../../data/genepy_matrix_v2_less.csv", index_col=0)
+data = pd.read_csv(
+    "analysis/data/genepy_original_missing_as_zero_without_GJA3.csv",
+    index_col=0,
+)
 
 X = data.drop('target', axis=1)
 y = data['target']
@@ -87,8 +91,20 @@ classifiers = {
 
 # 3. Nested cross-validation configuration
 
-outer_cv = StratifiedKFold(n_splits=5, shuffle=True, random_state=42)
-inner_cv = StratifiedKFold(n_splits=3, shuffle=True, random_state=42)
+N_OUTER_FOLDS = 5
+N_OUTER_REPEATS = 10
+
+outer_cv = RepeatedStratifiedKFold(
+    n_splits=N_OUTER_FOLDS,
+    n_repeats=N_OUTER_REPEATS,
+    random_state=42
+)
+
+inner_cv = StratifiedKFold(
+    n_splits=3,
+    shuffle=True,
+    random_state=42
+)
 
 results = []
 conf_matrices = {}
@@ -108,15 +124,26 @@ for name, config in classifiers.items():
     combined_y_prob = []
 
     for i, (train_idx, test_idx) in enumerate(outer_cv.split(X, y)):
-        print(f' Fold {i + 1}/5')
+        repetition = i // N_OUTER_FOLDS + 1
+        fold = i % N_OUTER_FOLDS + 1
+
+        print(
+            f" Repetition {repetition}/{N_OUTER_REPEATS}, "
+            f"fold {fold}/{N_OUTER_FOLDS}"
+        )
 
         X_train, X_test = X.iloc[train_idx], X.iloc[test_idx]
         y_train, y_test = y.iloc[train_idx], y.iloc[test_idx]
 
         pipeline = Pipeline([
-        ('scaler', StandardScaler()),
-        ('classifier', config['model'])
-    ])
+            ('imputer', SimpleImputer(
+                strategy='median',
+                add_indicator=False,
+                keep_empty_features=True,
+            )),
+            ('scaler', StandardScaler()),
+            ('classifier', config['model'])
+        ])
         current_params = {f'classifier__{key}': value for key, value in config['params'].items()}
 
         # Inner loop for hyperparameter tuning
@@ -125,7 +152,8 @@ for name, config in classifiers.items():
 
         # Store best parameters for this fold
         best_params_per_fold.append({
-            'fold': i + 1,
+            'repetition': repetition,
+            'fold': fold,
             'params': grid_search.best_params_
         })
 
@@ -157,10 +185,14 @@ for name, config in classifiers.items():
     })
 
     # Store best parameters for this model
-    with open(f'results/stats/best_params_{name.replace(" ", "_")}.txt', 'w') as f:
+    with open(f'{RESULTS_DIR}/stats/best_params_{name.replace(" ", "_")}.txt', 'w') as f:
         f.write(f"Best hyperparameters for {name} found in each outer fold:\n")
         for entry in best_params_per_fold:
-            f.write(f"Fold {entry['fold']}: {entry['params']}\n")
+            f.write(
+            f"Repetition {entry['repetition']}, "
+            f"fold {entry['fold']}: "
+            f"{entry['params']}\n"
+        )
 
     roc_plotting_data[name] = {
         'true': combined_y_true,
@@ -187,52 +219,13 @@ for i, (model_name, matrix) in enumerate(conf_matrices.items()):
     axes_flat[i].set_title(f'{model_name} Confusion Matrix')
 
 plt.tight_layout()
-plt.savefig('results/figures/model_comparison_cm_v3.png')
+plt.savefig(f'{RESULTS_DIR}/figures/model_comparison_cm_v3.png')
 plt.show()
 
-print("\n--- GENEROWANIE KONSENSUSU WAŻNOŚCI (PERMUTATION IMPORTANCE) ---")
-os.makedirs('results/figures/importance', exist_ok=True)
-
-consensus_data = []
-
-for name, config in classifiers.items():
-    print(f"Przetwarzanie: {name}...")
-    
-    # 1. Trenujemy finalny model na całym zbiorze
-    pipeline = Pipeline([
-        ('scaler', StandardScaler()),
-        ('classifier', config['model'])
-    ])
-    pipeline.fit(X, y)
-    
-    # 2. Obliczamy Permutation Importance (scoring='roc_auc')
-    r = permutation_importance(pipeline, X, y, n_repeats=10, random_state=42, n_jobs=-1, scoring='roc_auc')
-    
-    # 3. Zbieramy Top 10 genów dla tego modelu
-    for i in r.importances_mean.argsort()[::-1][:10]:
-        consensus_data.append({
-            'Model': name,
-            'Gene': X.columns[i],
-            'Importance': r.importances_mean[i]
-        })
-
-# 4. Tworzymy tabelę zbiorczą
-consensus_df = pd.DataFrame(consensus_data)
-
-# 5. Sprawdzamy, które geny powtarzają się najczęściej w Top 10 wszystkich modeli
-gene_votes = consensus_df.groupby('Gene').size().sort_values(ascending=False).reset_index()
-gene_votes.columns = ['Gene', 'Model_Votes']
-
-print("\n--- GENY Z NAJWIĘKSZYM KONSENSUSEM (Top 10 we wszystkich modelach) ---")
-print(gene_votes.head(10))
-
-# 6. Wizualizacja konsensusu
-plt.figure(figsize=(12, 6))
-sns.barplot(x='Model_Votes', y='Gene', data=gene_votes.head(15), palette='mako')
-plt.title("Geny najczęściej wskazywane jako ważne przez różne modele")
-plt.xlabel("Liczba modeli, które uznały gen za istotny (Top 10)")
-plt.savefig('results/figures/importance/gene_consensus_ranking_v3.png')
-plt.show()
+print(
+    "\nFull-data permutation importance skipped for the callability-aware "
+    "sensitivity analysis."
+)
 
 # 7. Generating ROC curves for all models
 print("\nGenerating combined ROC curves...")
@@ -269,12 +262,12 @@ plt.grid(alpha=0.3, linestyle='--')
 plt.tight_layout()
 
 # Saving in vector formats for high-quality publication
-plt.savefig('results/figures/multi_model_roc_comparison_v3.svg', format='svg', bbox_inches='tight')
-plt.savefig('results/figures/multi_model_roc_comparison_v3.pdf', format='pdf', bbox_inches='tight')
+plt.savefig(f'{RESULTS_DIR}/figures/multi_model_roc_comparison_v3.svg', format='svg', bbox_inches='tight')
+plt.savefig(f'{RESULTS_DIR}/figures/multi_model_roc_comparison_v3.pdf', format='pdf', bbox_inches='tight')
 
 plt.show()
 
-print(f"Success! ROC plot has been saved in the results/figures/ folder.")
+print(f"Success! ROC plot has been saved in {RESULTS_DIR}/figures/.")
 
 # -- 8. Generating Precision-Recall curves (English Version) ---
 print("\nGenerating collective Precision-Recall plot...")
@@ -315,9 +308,9 @@ plt.grid(alpha=0.3, linestyle='--')
 plt.tight_layout()
 
 # Save in vector formats for high-quality printing
-plt.savefig('results/figures/multi_model_pr_comparison_v3.svg', format='svg', bbox_inches='tight')
-plt.savefig('results/figures/multi_model_pr_comparison_v3.pdf', format='pdf', bbox_inches='tight')
+plt.savefig(f'{RESULTS_DIR}/figures/multi_model_pr_comparison_v3.svg', format='svg', bbox_inches='tight')
+plt.savefig(f'{RESULTS_DIR}/figures/multi_model_pr_comparison_v3.pdf', format='pdf', bbox_inches='tight')
 
 plt.show()
 
-print(f"Success! Precision-Recall plot saved to results/figures/")
+print(f"Success! Precision-Recall plot saved to {RESULTS_DIR}/figures/.")

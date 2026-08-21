@@ -13,7 +13,7 @@ from sklearn.neighbors import KNeighborsClassifier
 os.makedirs('results/figures', exist_ok=True)
 
 # 2. Ładowanie danych
-df = pd.read_csv("../../data/genepy_matrix.csv", index_col=0)
+df = pd.read_csv("analysis/data/genepy_matrix_v2.csv", index_col=0)
 X = df.drop('target', axis=1)
 y = df['target']
 
@@ -23,7 +23,7 @@ df_plot['Group'] = df['target'].map(target_names)
 
 # 3. Trening finalnego modelu (k-NN)
 # Wybieramy k=5 (lub Twoją wartość z optymalizacji)
-model = KNeighborsClassifier(n_neighbors=5, weights='distance')
+model = KNeighborsClassifier(n_neighbors=3)
 
 pipeline = Pipeline([
     ('scaler', StandardScaler()),
@@ -55,6 +55,13 @@ shap_v = shap_values
 # 5. Identyfikacja TOP 10 genów wg SHAP
 top_idx = np.argsort(np.abs(shap_v).mean(0))[::-1][:10]
 top_genes = X.columns[top_idx].tolist()
+
+pd.DataFrame({
+    'Gene': X.columns,
+    'Mean_Absolute_SHAP': np.abs(shap_v).mean(0)
+}).sort_values('Mean_Absolute_SHAP', ascending=False).to_csv(
+    'results/stats/knn_shap_feature_ranking_v2.csv', index=False
+)
 
 # --- KOMPOZYCJA WYKRESU (PUBLICATION STYLE) ---
 fig = plt.figure(figsize=(22, 10)) 
@@ -89,7 +96,7 @@ ax2.tick_params(labelsize=12)
 plt.xlabel("SHAP value (impact on UC probability)", fontsize=13)
 
 plt.tight_layout()
-plt.savefig('results/figures/final_analysis_knn_publication.svg', format='svg', dpi=300, bbox_inches='tight')
+plt.savefig('results/figures/final_analysis_knn_v2.svg', format='svg', dpi=300, bbox_inches='tight')
 plt.show()
 
 print("\nAnaliza SHAP dla k-NN zakończona.")

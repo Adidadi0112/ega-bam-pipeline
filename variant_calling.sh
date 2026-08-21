@@ -1,98 +1,216 @@
-#!/bin/bash
-set -exuo pipefail
+#!/usr/bin/env bash
+# Wave 2 per-sample GVCF calling: BQSR + HaplotypeCaller -ERC GVCF.
+#
+# The previous version emitted variant-only VCFs (no reference blocks). Those
+# files cannot be jointly genotyped and were the source of the Wave 1
+# missing-as-zero artifact. Do not use -ERC NONE for this paper.
+#
+# Required tools: gatk, samtools
+# Optional env:
+#   REF, KNOWN_SITES, RESULTS_DIR, INTERVALS_BED, GATK_JAVA_OPTS,
+#   HC_THREADS, SKIP_EXISTING (default 1), KEEP_WORK (default 0)
+set -euo pipefail
 
-# --- KONFIGURACJA ŚCIEŻEK ---
-REF="/home/adam/projects/ega-bam-pipeline/ref/human_g1k_v37.fasta"
-KNOWN_SITES="/home/adam/projects/ega-bam-pipeline/ref/dbsnp_138.b37.vcf"
-RESULTS_DIR="/home/adam/projects/ega-bam-pipeline/control_results"
-
-INTERVALS="-L 1 -L 2 -L 3 -L 4 -L 5 -L 6 -L 7 -L 8 -L 9 -L 10 -L 11 -L 12 -L 13 -L 14 -L 15 -L 16 -L 17 -L 18 -L 19 -L 20 -L 21 -L 22 -L X -L Y -L MT"
-
-mkdir -p "$RESULTS_DIR"
-
-# --- FUNKCJA PRZETWARZAJĄCA POJEDYNCZY PLIK ---
-process_bam() {
-    local input_bam=$1
-    local base_name=$(basename "$input_bam" .bam)
-    local dir_name=$(dirname "$input_bam")
-    
-    echo "-------------------------------------------------------"
-    echo "Przetwarzanie próbki: $base_name"
-    echo "-------------------------------------------------------"
-
-    # Definicja plików tymczasowych
-    local fixed_bam="${dir_name}/${base_name}_fixed.bam"
-    local recal_table="${RESULTS_DIR}/${base_name}_recal_data.table"
-    local recalibrated_bam="${dir_name}/${base_name}_recalibrated.bam"
-    local output_vcf="${RESULTS_DIR}/${base_name}.vcf"
-
-    # 1. AddOrReplaceReadGroups
-    gatk AddOrReplaceReadGroups \
-       -I "$input_bam" -O "$fixed_bam" \
-       -RGID 1 -RGLB lib1 -RGPL illumina -RGPU unit1 -RGSM "$base_name" \
-       --VALIDATION_STRINGENCY LENIENT
-    
-    samtools index "$fixed_bam"
-
-    # 2. BaseRecalibrator
-    gatk BaseRecalibrator \
-       -R "$REF" -I "$fixed_bam" --known-sites "$KNOWN_SITES" \
-       $INTERVALS -O "$recal_table" \
-       --read-validation-stringency LENIENT
-
-    # 3. ApplyBQSR
-    gatk ApplyBQSR \
-       -R "$REF" -I "$fixed_bam" --bqsr-recal-file "$recal_table" \
-       -O "$recalibrated_bam" \
-       --read-validation-stringency LENIENT
-    
-    # 4. Indexing recalibrated BAM
-    samtools index "$recalibrated_bam"
-
-    # 5. HaplotypeCaller
-    gatk HaplotypeCaller \
-       -R "$REF" -I "$recalibrated_bam" \
-       $INTERVALS -O "$output_vcf" \
-       --read-validation-stringency LENIENT
-    
-    rm "$fixed_bam" "${fixed_bam}.bai" "$recalibrated_bam" "${recalibrated_bam}.bai" "$recal_table"
-    
-    echo "Zakończono: $base_name. Wynik w $output_vcf"
-}
-
-# --- LOGIKA WYBORU TRYBU ---
-usage() {
-    echo "Użycie:"
-    echo "  $0 -f ścieżka/do/pliku.bam    # Tryb pojedynczego pliku"
-    echo "  $0 -d ścieżka/do/folderu      # Tryb batch (wszystkie .bam w folderze)"
-    exit 1
-}
-
-if [ ! -f "${KNOWN_SITES}.idx" ]; then
-    gatk IndexFeatureFile -I "$KNOWN_SITES"
+if [[ "${TRACE:-0}" == "1" ]]; then
+  set -x
 fi
 
-echo "Argumenty: $@"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REF="${REF:-$SCRIPT_DIR/ref/human_g1k_v37.fasta}"
+KNOWN_SITES="${KNOWN_SITES:-$SCRIPT_DIR/ref/dbsnp_138.b37.vcf}"
+RESULTS_DIR="${RESULTS_DIR:-$SCRIPT_DIR/gvcf_results}"
+INTERVALS_BED="${INTERVALS_BED:-}"
+GATK_JAVA_OPTS="${GATK_JAVA_OPTS:--Xmx8g}"
+HC_THREADS="${HC_THREADS:-4}"
+SKIP_EXISTING="${SKIP_EXISTING:-1}"
+KEEP_WORK="${KEEP_WORK:-0}"
 
-while getopts "f:d:" opt; do
+gatk_cmd() {
+  gatk --java-options "$GATK_JAVA_OPTS" "$@"
+}
+
+ensure_index() {
+  local vcf=$1
+  if [[ -f "${vcf}.idx" || -f "${vcf}.tbi" || -f "${vcf}.csi" ]]; then
+    return 0
+  fi
+  gatk_cmd IndexFeatureFile -I "$vcf"
+}
+
+strip_alignment_ext() {
+  local name=$1
+  name=${name%.bam}
+  name=${name%.cram}
+  name=${name%.BAM}
+  name=${name%.CRAM}
+  printf '%s' "$name"
+}
+
+process_bam() {
+  local input_bam=$1
+  local sample_id=${2:-}
+  local output_gvcf=${3:-}
+
+  if [[ ! -f "$input_bam" ]]; then
+    echo "ERROR: alignment not found: $input_bam" >&2
+    return 1
+  fi
+  if [[ ! -f "$REF" ]]; then
+    echo "ERROR: reference FASTA not found: $REF" >&2
+    echo "Set REF to human_g1k_v37.fasta (see repository README Drive folder)." >&2
+    return 1
+  fi
+  if [[ ! -f "$KNOWN_SITES" ]]; then
+    echo "ERROR: known-sites VCF not found: $KNOWN_SITES" >&2
+    return 1
+  fi
+
+  local base_name
+  base_name=$(strip_alignment_ext "$(basename "$input_bam")")
+  sample_id=${sample_id:-$base_name}
+  mkdir -p "$RESULTS_DIR"
+  output_gvcf=${output_gvcf:-"$RESULTS_DIR/${sample_id}.g.vcf.gz"}
+  mkdir -p "$(dirname "$output_gvcf")"
+
+  if [[ "$SKIP_EXISTING" == "1" && -s "$output_gvcf" && ( -f "${output_gvcf}.tbi" || -f "${output_gvcf}.idx" ) ]]; then
+    echo "Skipping $sample_id (GVCF already exists): $output_gvcf"
+    return 0
+  fi
+
+  local interval_args=()
+  if [[ -n "$INTERVALS_BED" ]]; then
+    if [[ ! -f "$INTERVALS_BED" ]]; then
+      echo "ERROR: INTERVALS_BED not found: $INTERVALS_BED" >&2
+      echo "Use the union of UC and JPT capture/exome targets, not the UC gene BED." >&2
+      return 1
+    fi
+    interval_args=(-L "$INTERVALS_BED")
+  else
+    echo "WARNING: INTERVALS_BED unset; calling whole chromosomes. For Wave 2 set the capture-union BED." >&2
+    interval_args=(-L 1 -L 2 -L 3 -L 4 -L 5 -L 6 -L 7 -L 8 -L 9 -L 10 -L 11 -L 12 -L 13 -L 14 -L 15 -L 16 -L 17 -L 18 -L 19 -L 20 -L 21 -L 22 -L X -L Y -L MT)
+  fi
+
+  ensure_index "$KNOWN_SITES"
+
+  local work_dir="$RESULTS_DIR/work/${sample_id}"
+  mkdir -p "$work_dir"
+  local log="$RESULTS_DIR/logs/${sample_id}.log"
+  mkdir -p "$(dirname "$log")"
+
+  local fixed_bam="$work_dir/read_groups.bam"
+  local recal_table="$work_dir/bqsr.table"
+  local recalibrated_bam="$work_dir/recalibrated.bam"
+
+  {
+    echo "-------------------------------------------------------"
+    echo "GVCF calling: $sample_id"
+    echo "  input:  $input_bam"
+    echo "  output: $output_gvcf"
+    echo "  ref:    $REF"
+    echo "-------------------------------------------------------"
+
+    if [[ ! -f "${input_bam}.bai" && ! -f "${input_bam}.crai" && ! -f "${input_bam%.*}.bai" ]]; then
+      echo "Indexing input alignment (no companion BAI/CRAI found)"
+      samtools index "$input_bam"
+    fi
+
+    gatk_cmd AddOrReplaceReadGroups \
+      -I "$input_bam" \
+      -O "$fixed_bam" \
+      -R "$REF" \
+      -RGID 1 -RGLB lib1 -RGPL illumina -RGPU unit1 -RGSM "$sample_id" \
+      --VALIDATION_STRINGENCY LENIENT
+    samtools index "$fixed_bam"
+
+    gatk_cmd BaseRecalibrator \
+      -R "$REF" \
+      -I "$fixed_bam" \
+      --known-sites "$KNOWN_SITES" \
+      "${interval_args[@]}" \
+      -O "$recal_table" \
+      --read-validation-stringency LENIENT
+
+    gatk_cmd ApplyBQSR \
+      -R "$REF" \
+      -I "$fixed_bam" \
+      --bqsr-recal-file "$recal_table" \
+      -O "$recalibrated_bam" \
+      --read-validation-stringency LENIENT
+    samtools index "$recalibrated_bam"
+
+    gatk_cmd HaplotypeCaller \
+      -R "$REF" \
+      -I "$recalibrated_bam" \
+      "${interval_args[@]}" \
+      -ERC GVCF \
+      --native-pair-hmm-threads "$HC_THREADS" \
+      -O "$output_gvcf" \
+      --read-validation-stringency LENIENT
+
+    if [[ ! -f "${output_gvcf}.tbi" && ! -f "${output_gvcf}.idx" ]]; then
+      ensure_index "$output_gvcf"
+    fi
+
+    if [[ "$KEEP_WORK" != "1" ]]; then
+      rm -rf "$work_dir"
+    fi
+
+    echo "Finished $sample_id -> $output_gvcf"
+  } 2>&1 | tee -a "$log"
+}
+
+usage() {
+  cat <<EOF
+Usage:
+  $0 -f path/to/sample.bam [-s SAMPLE_ID] [-o OUT.g.vcf.gz] [-L INTERVALS.bed]
+  $0 -d path/to/bam_directory
+
+Wave 2 GVCF caller. Outputs SAMPLE.g.vcf.gz under RESULTS_DIR (default: ./gvcf_results).
+Does not delete the input BAM.
+
+Environment:
+  REF INTERVALS_BED KNOWN_SITES RESULTS_DIR GATK_JAVA_OPTS HC_THREADS SKIP_EXISTING
+EOF
+  exit 1
+}
+
+sample_id_arg=""
+output_arg=""
+mode=""
+target=""
+
+while getopts "f:d:s:o:L:h" opt; do
   case $opt in
-    f)
-      echo "Tryb pojedynczego pliku: $OPTARG"
-      process_bam "$OPTARG"
-      ;;
-    d)
-      echo "Tryb katalogu: $OPTARG"
-      for file in "$OPTARG"/*.bam; do
-          # Pomijamy pliki, które nie istnieją, oraz pliki tymczasowe wygenerowane przez ten skrypt
-          if [ -e "$file" ] && [[ ! "$file" == *"_fixed.bam" ]] && [[ ! "$file" == *"_recalibrated.bam" ]]; then
-              process_bam "$file"
-          fi
-      done
-      ;;
-    *)
-      usage
-      ;;
+    f) mode="file"; target=$OPTARG ;;
+    d) mode="dir"; target=$OPTARG ;;
+    s) sample_id_arg=$OPTARG ;;
+    o) output_arg=$OPTARG ;;
+    L) INTERVALS_BED=$OPTARG ;;
+    *) usage ;;
   esac
 done
 
-if [ $# -eq 0 ]; then usage; fi
+if [[ -z "$mode" ]]; then
+  usage
+fi
+
+if [[ "$mode" == "file" ]]; then
+  process_bam "$target" "$sample_id_arg" "$output_arg"
+else
+  if [[ ! -d "$target" ]]; then
+    echo "ERROR: directory not found: $target" >&2
+    exit 1
+  fi
+  shopt -s nullglob
+  local_files=("$target"/*.bam "$target"/*.cram)
+  if [[ ${#local_files[@]} -eq 0 ]]; then
+    echo "ERROR: no BAM/CRAM files in $target" >&2
+    exit 1
+  fi
+  for file in "${local_files[@]}"; do
+    if [[ "$file" == *_fixed.bam || "$file" == *_recalibrated.bam ]]; then
+      continue
+    fi
+    process_bam "$file"
+  done
+fi
