@@ -13,7 +13,7 @@ This build does **not** download alignments by itself. Joint genotyping starts o
 
 ## What was wrong in the original bash scripts
 
-`download_and_process.sh` + `variant_calling.sh` + `merge_vcf.sh` downloaded JPT BAMs, called **variant-only** HaplotypeCaller (no `-ERC GVCF`), deleted the BAM, and `bcftools merge`d the VCFs. That is the Wave 1 artifact. Those scripts now emit GVCFs, keep BAMs, restrict JPT to the modelled 70, and refuse the merge.
+`download_and_process.sh` + `variant_calling.sh` + `merge_vcf.sh` downloaded JPT BAMs, called **variant-only** HaplotypeCaller (no `-ERC GVCF`), deleted the BAM, and `bcftools merge`d the VCFs. That is the Wave 1 artifact. Those scripts now emit GVCFs, restrict JPT to the modelled 70, refuse the merge, and still delete each BAM **after** the GVCF exists and is indexed (one BAM on disk at a time).
 
 There is still **no EGA downloader** in the repo (UC files come from a controlled-access client such as `pyega3`). After they are on disk:
 
@@ -31,8 +31,8 @@ source paper/config/wave2.env.example
 # 1. JPT BAMs + per-sample GVCFs (modelled 70). Does not start unless you run it.
 bash download_and_process.sh
 
-# 1b. UC GVCFs from local EGA BAM/CRAM directory
-bash variant_calling.sh -d /path/to/ega_bams
+# 1b. UC GVCFs from local EGA BAM/CRAM directory (optional: delete each BAM after GVCF)
+DELETE_BAM_AFTER_GVCF=1 bash variant_calling.sh -d /path/to/ega_bams
 
 # 2. Sample map + joint genotyping
 uc-genepy-ml/scripts/upstream/build_sample_map.sh "$RESULTS_DIR" sample_map.tsv
@@ -65,4 +65,4 @@ Then rebuild GenePy from the joint-called VCF (do not merge variant-only VCFs) a
 - Run `merge_vcf.sh` / `merge_variant_vcfs.sh` for Wave 2.
 - Compute PCA from the 537 UC-panel SNVs.
 - Expand the gene list on the current variant-only merge.
-- Delete BAMs before the GVCF exists and is indexed (`DELETE_BAM_AFTER_GVCF` defaults to 0).
+- Delete a BAM before its GVCF exists and is indexed. `DELETE_BAM_AFTER_GVCF` defaults to 1 and only runs after that check; set it to 0 if you have space to keep alignments.

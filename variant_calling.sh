@@ -8,7 +8,8 @@
 # Required tools: gatk, samtools
 # Optional env:
 #   REF, KNOWN_SITES, RESULTS_DIR, INTERVALS_BED, GATK_JAVA_OPTS,
-#   HC_THREADS, SKIP_EXISTING (default 1), KEEP_WORK (default 0)
+#   HC_THREADS, SKIP_EXISTING (default 1), KEEP_WORK (default 0),
+#   DELETE_BAM_AFTER_GVCF (default 0 here; download_and_process.sh sets 1)
 set -euo pipefail
 
 if [[ "${TRACE:-0}" == "1" ]]; then
@@ -24,6 +25,7 @@ GATK_JAVA_OPTS="${GATK_JAVA_OPTS:--Xmx8g}"
 HC_THREADS="${HC_THREADS:-4}"
 SKIP_EXISTING="${SKIP_EXISTING:-1}"
 KEEP_WORK="${KEEP_WORK:-0}"
+DELETE_BAM_AFTER_GVCF="${DELETE_BAM_AFTER_GVCF:-0}"
 
 gatk_cmd() {
   gatk --java-options "$GATK_JAVA_OPTS" "$@"
@@ -35,6 +37,36 @@ ensure_index() {
     return 0
   fi
   gatk_cmd IndexFeatureFile -I "$vcf"
+}
+
+gvcf_ready() {
+  local gvcf=$1
+  local sample=$2
+  if [[ ! -s "$gvcf" ]]; then
+    return 1
+  fi
+  if [[ ! -f "${gvcf}.tbi" && ! -f "${gvcf}.idx" ]]; then
+    return 1
+  fi
+  if command -v bcftools >/dev/null 2>&1; then
+    bcftools query -l "$gvcf" 2>/dev/null | grep -Fxq "$sample"
+  fi
+}
+
+maybe_delete_bam() {
+  local input_bam=$1
+  local gvcf=$2
+  local sample=$3
+  if [[ "$DELETE_BAM_AFTER_GVCF" != "1" ]]; then
+    return 0
+  fi
+  if ! gvcf_ready "$gvcf" "$sample"; then
+    echo "WARNING: not deleting $input_bam because GVCF is incomplete" >&2
+    return 1
+  fi
+  rm -f "$input_bam" "${input_bam}.bai" "${input_bam}.crai" \
+    "${input_bam%.*}.bai" "${input_bam}.aria2"
+  echo "Removed alignment to free disk: $input_bam"
 }
 
 strip_alignment_ext() {
@@ -74,6 +106,7 @@ process_bam() {
 
   if [[ "$SKIP_EXISTING" == "1" && -s "$output_gvcf" && ( -f "${output_gvcf}.tbi" || -f "${output_gvcf}.idx" ) ]]; then
     echo "Skipping $sample_id (GVCF already exists): $output_gvcf"
+    maybe_delete_bam "$input_bam" "$output_gvcf" "$sample_id" || true
     return 0
   fi
 
@@ -157,6 +190,8 @@ process_bam() {
 
     echo "Finished $sample_id -> $output_gvcf"
   } 2>&1 | tee -a "$log"
+
+  maybe_delete_bam "$input_bam" "$output_gvcf" "$sample_id"
 }
 
 usage() {
@@ -166,10 +201,11 @@ Usage:
   $0 -d path/to/bam_directory
 
 Wave 2 GVCF caller. Outputs SAMPLE.g.vcf.gz under RESULTS_DIR (default: ./gvcf_results).
-Does not delete the input BAM.
+Deletes the input BAM only if DELETE_BAM_AFTER_GVCF=1 and the GVCF is indexed.
 
 Environment:
   REF INTERVALS_BED KNOWN_SITES RESULTS_DIR GATK_JAVA_OPTS HC_THREADS SKIP_EXISTING
+  DELETE_BAM_AFTER_GVCF=1  # delete each BAM only after its GVCF is indexed
 EOF
   exit 1
 }

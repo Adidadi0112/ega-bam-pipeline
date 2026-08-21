@@ -2,7 +2,9 @@
 # Download 1000 Genomes JPT exome BAMs and run Wave 2 GVCF calling.
 #
 # Default: the 70 modelled JPT samples (paper/config/wave2_jpt_urls.txt),
-# HTTPS, resume, companion BAI, skip finished GVCFs, keep BAMs.
+# one BAM at a time. After a GVCF exists and is indexed, the BAM and BAI
+# are deleted so peak disk is roughly one exome BAM plus accumulated GVCFs.
+# Set DELETE_BAM_AFTER_GVCF=0 to keep alignments.
 #
 # This does not download EGA UC alignments. Point variant_calling.sh -d at
 # the local EGA BAM/CRAM directory after those files exist.
@@ -18,7 +20,7 @@ fi
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ALL_JPT="${ALL_JPT:-0}"
 DOWNLOAD_ONLY="${DOWNLOAD_ONLY:-0}"
-DELETE_BAM_AFTER_GVCF="${DELETE_BAM_AFTER_GVCF:-0}"
+DELETE_BAM_AFTER_GVCF="${DELETE_BAM_AFTER_GVCF:-1}"
 DRY_RUN="${DRY_RUN:-0}"
 BAM_DIR="${BAM_DIR:-$SCRIPT_DIR/bams/jpt}"
 RESULTS_DIR="${RESULTS_DIR:-$SCRIPT_DIR/gvcf_results}"
@@ -60,10 +62,32 @@ download_file() {
   fi
 }
 
+gvcf_ready() {
+  local gvcf=$1
+  local sample=$2
+  if [[ ! -s "$gvcf" ]]; then
+    return 1
+  fi
+  if [[ ! -f "${gvcf}.tbi" && ! -f "${gvcf}.idx" ]]; then
+    return 1
+  fi
+  if command -v bcftools >/dev/null 2>&1; then
+    bcftools query -l "$gvcf" 2>/dev/null | grep -Fxq "$sample"
+  fi
+}
+
+remove_bam() {
+  local bam_path=$1
+  rm -f "$bam_path" "${bam_path}.bai" "${bam_path}.crai" \
+    "${bam_path%.bam}.bai" "${bam_path}.aria2"
+  echo "Removed alignment to free disk: $bam_path"
+}
+
 n_urls=$(grep -cve '^[[:space:]]*$' "$LINKS_FILE" || true)
 echo "JPT URL list: $LINKS_FILE ($n_urls files)"
 echo "BAM directory: $BAM_DIR"
 echo "GVCF directory: $RESULTS_DIR"
+echo "Delete BAM after successful GVCF: $DELETE_BAM_AFTER_GVCF"
 
 while read -r url || [[ -n "${url:-}" ]]; do
   url=${url%$'\r'}
@@ -84,8 +108,11 @@ while read -r url || [[ -n "${url:-}" ]]; do
     continue
   fi
 
-  if [[ "${SKIP_EXISTING:-1}" == "1" && -s "$gvcf_path" && ( -f "${gvcf_path}.tbi" || -f "${gvcf_path}.idx" ) ]]; then
+  if [[ "${SKIP_EXISTING:-1}" == "1" ]] && gvcf_ready "$gvcf_path" "$sample_id"; then
     echo "GVCF exists, skipping download and call: $gvcf_path"
+    if [[ "$DELETE_BAM_AFTER_GVCF" == "1" && -e "$bam_path" ]]; then
+      remove_bam "$bam_path"
+    fi
     continue
   fi
 
@@ -104,9 +131,13 @@ while read -r url || [[ -n "${url:-}" ]]; do
     -s "$sample_id" \
     -o "$gvcf_path"
 
+  if ! gvcf_ready "$gvcf_path" "$sample_id"; then
+    echo "ERROR: GVCF missing or incomplete for $sample_id; keeping $bam_path for retry" >&2
+    exit 1
+  fi
+
   if [[ "$DELETE_BAM_AFTER_GVCF" == "1" ]]; then
-    echo "DELETE_BAM_AFTER_GVCF=1: removing $bam_path"
-    rm -f "$bam_path" "$bai_path"
+    remove_bam "$bam_path"
   fi
 done < "$LINKS_FILE"
 
