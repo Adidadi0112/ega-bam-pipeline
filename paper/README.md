@@ -25,7 +25,8 @@ No BAM download, no GVCF joint calling, no autoimmune/WES scoring (current VCF i
 | `analysis/scripts/paper/wave1_pathways.py` | Pathway-mean features + rank enrichment |
 | `analysis/scripts/paper/plot_wave1.py` | Figures |
 | `analysis/scripts/paper/wave2_nested_panels.py` | Stafford-style panels after joint GenePy exists |
-| `download_and_process.sh` | JPT BAM download + Wave 2 GVCF calling (70 modelled samples) |
+| `download_and_process.sh` | UC (pyega3, 74 germline WES) + JPT (HTTPS, 70) BAM→GVCF |
+| `ega_download_file.sh` | Single-file `pyega3 fetch` for EGAF accessions |
 | `variant_calling.sh` | Per-sample BQSR + HaplotypeCaller `-ERC GVCF` |
 | `uc-genepy-ml/scripts/upstream/call_gvcf.sh` | Same GVCF caller, portable CLI |
 | `uc-genepy-ml/scripts/upstream/joint_genotype.sh` | GenomicsDB import + GenotypeGVCFs |
